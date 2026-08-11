@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"strings"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
@@ -28,6 +27,17 @@ func main() {
 	ch, err := conn.Channel()
 	if err != nil {
 		log.Fatalf("could not create channel: %v", err)
+	}
+
+	_, _, err = pubsub.DeclareAndBind(
+		conn,
+		routing.ExchangePerilTopic,
+		"game_logs",
+		"game_logs.*",
+		pubsub.SimpleQueueDurable,
+	)
+	if err != nil {
+		log.Fatalf("could not declare and bind game_logs queue: %v", err)
 	}
 
 	gamelogic.PrintServerHelp()
@@ -71,6 +81,5 @@ func main() {
 		default:
 			fmt.Println("i don't understand that command")
 		}
-		_ = strings.TrimSpace("")
 	}
 }
