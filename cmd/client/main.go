@@ -3,9 +3,6 @@ package main
 import (
 	"fmt"
 	"log"
-	"os"
-	"os/signal"
-	"syscall"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
@@ -43,9 +40,38 @@ func main() {
 		log.Fatalf("could not declare and bind queue: %v", err)
 	}
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
+	gameState := gamelogic.NewGameState(username)
 
-	fmt.Println("Peril game client shutting down...")
+	for {
+		words := gamelogic.GetInput()
+		if len(words) == 0 {
+			continue
+		}
+
+		switch words[0] {
+		case "spawn":
+			err = gameState.CommandSpawn(words)
+			if err != nil {
+				fmt.Println(err)
+			}
+		case "move":
+			_, err = gameState.CommandMove(words)
+			if err != nil {
+				fmt.Println(err)
+			} else {
+				fmt.Println("move successful")
+			}
+		case "status":
+			gameState.CommandStatus()
+		case "help":
+			gamelogic.PrintClientHelp()
+		case "spam":
+			fmt.Println("Spamming not allowed yet!")
+		case "quit":
+			gamelogic.PrintQuit()
+			return
+		default:
+			fmt.Println("i don't understand that command")
+		}
+	}
 }
