@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log"
+	"time"
 
 	amqp "github.com/rabbitmq/amqp091-go"
 
@@ -53,28 +54,49 @@ func handlerMove(gs *gamelogic.GameState, ch *amqp.Channel) func(gamelogic.ArmyM
 	}
 }
 
-func handlerWar(gs *gamelogic.GameState) func(gamelogic.RecognitionOfWar) pubsub.AckType {
+func handlerWar(gs *gamelogic.GameState, ch *amqp.Channel) func(gamelogic.RecognitionOfWar) pubsub.AckType {
 	return func(rw gamelogic.RecognitionOfWar) pubsub.AckType {
 		defer fmt.Print("> ")
-		outcome, _, _ := gs.HandleWar(rw)
+		outcome, winner, loser := gs.HandleWar(rw)
 
+		var msg string
 		switch outcome {
 		case gamelogic.WarOutcomeNotInvolved:
 			// let another client pick it up
 			return pubsub.NackRequeue
 		case gamelogic.WarOutcomeNoUnits:
 			return pubsub.NackDiscard
-		case gamelogic.WarOutcomeOpponentWon:
-			return pubsub.Ack
-		case gamelogic.WarOutcomeYouWon:
-			return pubsub.Ack
+		case gamelogic.WarOutcomeOpponentWon, gamelogic.WarOutcomeYouWon:
+			msg = fmt.Sprintf("%s won a war against %s", winner, loser)
 		case gamelogic.WarOutcomeDraw:
-			return pubsub.Ack
+			msg = fmt.Sprintf("A war between %s and %s resulted in a draw", winner, loser)
 		default:
 			fmt.Printf("unknown war outcome: %v\n", outcome)
 			return pubsub.NackDiscard
 		}
+
+		// log is keyed by the player who started the war
+		err := publishGameLog(ch, rw.Attacker.Username, msg)
+		if err != nil {
+			fmt.Printf("could not publish game log: %v\n", err)
+			return pubsub.NackRequeue
+		}
+		return pubsub.Ack
 	}
+}
+
+// publishGameLog sends a gob-encoded game log to the topic exchange
+func publishGameLog(ch *amqp.Channel, username, msg string) error {
+	return pubsub.PublishGob(
+		ch,
+		routing.ExchangePerilTopic,
+		routing.GameLogSlug+"."+username,
+		routing.GameLog{
+			CurrentTime: time.Now(),
+			Message:     msg,
+			Username:    username,
+		},
+	)
 }
 
 func main() {
@@ -90,7 +112,7 @@ func main() {
 
 	fmt.Println("Peril game client connected to RabbitMQ!")
 
-	// created before the subscriptions so the move handler can publish with it
+	// created before the subscriptions so the handlers can publish with it
 	publishCh, err := conn.Channel()
 	if err != nil {
 		log.Fatalf("could not create publish channel: %v", err)
@@ -134,7 +156,7 @@ func main() {
 		"war",
 		routing.WarRecognitionsPrefix+".*",
 		pubsub.SimpleQueueDurable,
-		handlerWar(gameState),
+		handlerWar(gameState, publishCh),
 	)
 	if err != nil {
 		log.Fatalf("could not subscribe to war queue: %v", err)
