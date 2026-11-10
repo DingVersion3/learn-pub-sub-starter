@@ -29,6 +29,7 @@ func handlerMove(gs *gamelogic.GameState, ch *amqp.Channel) func(gamelogic.ArmyM
 		case gamelogic.MoveOutComeSafe:
 			return pubsub.Ack
 		case gamelogic.MoveOutcomeMakeWar:
+			// routing key uses the username of the player consuming the move
 			err := pubsub.PublishJSON(
 				ch,
 				routing.ExchangePerilTopic,
@@ -40,8 +41,10 @@ func handlerMove(gs *gamelogic.GameState, ch *amqp.Channel) func(gamelogic.ArmyM
 			)
 			if err != nil {
 				fmt.Printf("could not publish war: %v\n", err)
+				// try again later so the war isn't lost
+				return pubsub.NackRequeue
 			}
-			return pubsub.NackRequeue
+			return pubsub.Ack
 		case gamelogic.MoveOutcomeSamePlayer:
 			return pubsub.NackDiscard
 		default:
@@ -57,6 +60,7 @@ func handlerWar(gs *gamelogic.GameState) func(gamelogic.RecognitionOfWar) pubsub
 
 		switch outcome {
 		case gamelogic.WarOutcomeNotInvolved:
+			// let another client pick it up
 			return pubsub.NackRequeue
 		case gamelogic.WarOutcomeNoUnits:
 			return pubsub.NackDiscard
@@ -86,6 +90,7 @@ func main() {
 
 	fmt.Println("Peril game client connected to RabbitMQ!")
 
+	// created before the subscriptions so the move handler can publish with it
 	publishCh, err := conn.Channel()
 	if err != nil {
 		log.Fatalf("could not create publish channel: %v", err)
@@ -122,6 +127,7 @@ func main() {
 		log.Fatalf("could not subscribe to army moves queue: %v", err)
 	}
 
+	// one shared durable queue, so each war is handled by only one client
 	err = pubsub.SubscribeJSON(
 		conn,
 		routing.ExchangePerilTopic,
