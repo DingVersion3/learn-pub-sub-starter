@@ -168,6 +168,12 @@ func subscribe[T any](
 		return fmt.Errorf("could not declare and bind queue: %v", err)
 	}
 
+	// only hold 10 unacked messages at a time so other consumers get a share
+	err = ch.Qos(10, 0, false)
+	if err != nil {
+		return fmt.Errorf("could not set QoS: %v", err)
+	}
+
 	deliveryChan, err := ch.Consume(
 		queue.Name,
 		"",
