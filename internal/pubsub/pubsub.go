@@ -17,7 +17,7 @@ const (
 	SimpleQueueTransient
 )
 
-// AckType tells SubscribeJSON what to do with a message after the handler runs
+// AckType tells subscribe what to do with a message after the handler runs
 type AckType int
 
 const (
@@ -51,6 +51,7 @@ func PublishJSON[T any](ch *amqp.Channel, exchange, key string, val T) error {
 }
 
 func PublishGob[T any](ch *amqp.Channel, exchange, key string, val T) error {
+	// encode into an in-memory buffer, then publish the bytes
 	var buf bytes.Buffer
 	enc := gob.NewEncoder(&buf)
 	err := enc.Encode(val)
@@ -72,6 +73,7 @@ func PublishGob[T any](ch *amqp.Channel, exchange, key string, val T) error {
 	if err != nil {
 		return err
 	}
+
 	return nil
 }
 
@@ -97,6 +99,7 @@ func DeclareAndBind(
 		autoDelete,
 		exclusive,
 		false,
+		// failed (nacked-without-requeue) messages get routed to the dead letter exchange
 		amqp.Table{
 			"x-dead-letter-exchange": "peril_dlx",
 		},
@@ -127,6 +130,39 @@ func SubscribeJSON[T any](
 	queueType SimpleQueueType,
 	handler func(T) AckType,
 ) error {
+	return subscribe(conn, exchange, queueName, key, queueType, handler, func(data []byte) (T, error) {
+		var target T
+		err := json.Unmarshal(data, &target)
+		return target, err
+	})
+}
+
+func SubscribeGob[T any](
+	conn *amqp.Connection,
+	exchange,
+	queueName,
+	key string,
+	queueType SimpleQueueType,
+	handler func(T) AckType,
+) error {
+	return subscribe(conn, exchange, queueName, key, queueType, handler, func(data []byte) (T, error) {
+		var target T
+		dec := gob.NewDecoder(bytes.NewBuffer(data))
+		err := dec.Decode(&target)
+		return target, err
+	})
+}
+
+// subscribe holds the shared consume loop; the unmarshaller decides the format
+func subscribe[T any](
+	conn *amqp.Connection,
+	exchange,
+	queueName,
+	key string,
+	queueType SimpleQueueType,
+	handler func(T) AckType,
+	unmarshaller func([]byte) (T, error),
+) error {
 	ch, queue, err := DeclareAndBind(conn, exchange, queueName, key, queueType)
 	if err != nil {
 		return fmt.Errorf("could not declare and bind queue: %v", err)
@@ -147,11 +183,10 @@ func SubscribeJSON[T any](
 
 	go func() {
 		for delivery := range deliveryChan {
-			var target T
-			err := json.Unmarshal(delivery.Body, &target)
+			target, err := unmarshaller(delivery.Body)
 			if err != nil {
 				fmt.Printf("could not unmarshal message: %v\n", err)
-				// bad JSON will never succeed, so don't leave it stuck unacked
+				// bad data will never succeed, so don't leave it stuck unacked
 				delivery.Nack(false, false)
 				continue
 			}
