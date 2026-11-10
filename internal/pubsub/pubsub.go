@@ -15,6 +15,15 @@ const (
 	SimpleQueueTransient
 )
 
+// AckType tells SubscribeJSON what to do with a message after the handler runs
+type AckType int
+
+const (
+	Ack AckType = iota
+	NackRequeue
+	NackDiscard
+)
+
 func PublishJSON[T any](ch *amqp.Channel, exchange, key string, val T) error {
 	data, err := json.Marshal(val)
 	if err != nil {
@@ -87,7 +96,7 @@ func SubscribeJSON[T any](
 	queueName,
 	key string,
 	queueType SimpleQueueType,
-	handler func(T),
+	handler func(T) AckType,
 ) error {
 	ch, queue, err := DeclareAndBind(conn, exchange, queueName, key, queueType)
 	if err != nil {
@@ -113,10 +122,22 @@ func SubscribeJSON[T any](
 			err := json.Unmarshal(delivery.Body, &target)
 			if err != nil {
 				fmt.Printf("could not unmarshal message: %v\n", err)
+				// bad JSON will never succeed, so don't leave it stuck unacked
+				delivery.Nack(false, false)
 				continue
 			}
-			handler(target)
-			delivery.Ack(false)
+
+			switch handler(target) {
+			case Ack:
+				delivery.Ack(false)
+				fmt.Println("Ack")
+			case NackRequeue:
+				delivery.Nack(false, true)
+				fmt.Println("NackRequeue")
+			case NackDiscard:
+				delivery.Nack(false, false)
+				fmt.Println("NackDiscard")
+			}
 		}
 	}()
 
